@@ -52,13 +52,10 @@ rawurl(){ echo "https://raw.githubusercontent.com/$REPO/$1/v10/$2"; }
 fetch(){
     u=$1; dst=$2
     rm -f "$dst"
-    if command -v wget >/dev/null 2>&1; then
-        wget -q -O "$dst" "$u" && [ -s "$dst" ] && return 0
-    fi
+    # Some embedded ASUS shells lack the `command` builtin; try tools directly.
+    wget -q -O "$dst" "$u" 2>/dev/null && [ -s "$dst" ] && return 0
     rm -f "$dst"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 12 -o "$dst" "$u" && [ -s "$dst" ] && return 0
-    fi
+    curl -fsSL --connect-timeout 12 -o "$dst" "$u" 2>/dev/null && [ -s "$dst" ] && return 0
     return 1
 }
 check_old(){
@@ -105,8 +102,7 @@ check_v6(){
     # IPv6 forwarding already off is safe even if ip6tables is absent.
     if [ -e /proc/sys/net/ipv6/conf/all/forwarding ] &&
        [ "$(cat /proc/sys/net/ipv6/conf/all/forwarding)" = 1 ]; then
-        command -v ip6tables >/dev/null 2>&1 || fail 'IPv6 forwarding ON, ip6tables unavailable'
-        ip6tables -L FORWARD -n >/dev/null 2>&1 || fail 'IPv6 firewall unavailable'
+        ip6tables -L FORWARD -n >/dev/null 2>&1 || fail 'IPv6 forwarding ON but ip6tables unavailable or unusable'
     fi
 }
 conflicts(){
@@ -135,7 +131,7 @@ preflight(){
     memmin 8192 || fail 'Insufficient RAM before cutover: need 8 MiB free (excluding cache)'
     # Reserve NVRAM only on first install. At reboot the hook already occupies that space.
     if ! nvram get script_wanup 2>/dev/null | grep -q '^#AV10-BEGIN'; then
-        nvleft=$(nvram show 2>&1 | sed -n 's/.*(\([0-9][0-9]*\) left).*/\1/p' | tail -n 1)
+        nvleft=$(nvram show 2>&1 | sed -n 's/.* \([0-9][0-9]*\) bytes free\..*/\1/p' | tail -n 1)
         [ -n "$nvleft" ] || fail 'Cannot measure free NVRAM for boot hook'
         [ "$nvleft" -ge 700 ] || fail "NVRAM free space only $nvleft bytes; cannot install safely"
     fi
@@ -330,10 +326,10 @@ commit(){
     # Preserve old startup as-is. New hook is prepended so even a trailing exit cannot skip it.
     url="https://raw.githubusercontent.com/$REPO/$rev/v10/router.sh"
     hook="#AV10-BEGIN
-( sleep 25; wget -q -O /tmp/av10-router.sh '$url' && [ \"\$(md5sum /tmp/av10-router.sh | awk '{print \$1}')\" = '$s_md5' ] && chmod 700 /tmp/av10-router.sh && sh /tmp/av10-router.sh boot '$rev' ) </dev/null >/tmp/av10-boot.log 2>&1 &
+( sleep 25; u='$url'; t=/tmp/av10-router.sh.dl; ( wget -q -O \"\$t\" \"\$u\" || curl -fsSL -o \"\$t\" \"\$u\" ) && [ \"\$(md5sum \"\$t\" | awk '{print \$1}')\" = '$s_md5' ] && mv \"\$t\" /tmp/av10-router.sh && chmod 700 /tmp/av10-router.sh && sh /tmp/av10-router.sh boot '$rev' ) </dev/null >/tmp/av10-boot.log 2>&1 &
 #AV10-END"
     # Check NVRAM headroom without printing any sensitive stored values.
-    left=$(nvram show 2>&1 | sed -n 's/.*(\([0-9][0-9]*\) left).*/\1/p' | tail -n 1)
+    left=$(nvram show 2>&1 | sed -n 's/.* \([0-9][0-9]*\) bytes free\..*/\1/p' | tail -n 1)
     need=$((${#hook}+256))
     [ -n "$left" ] || fail 'Cannot determine available NVRAM bytes; refusing commit'
     [ "$left" -ge "$need" ] || fail "NVRAM has ${left} bytes free; need at least $need"
